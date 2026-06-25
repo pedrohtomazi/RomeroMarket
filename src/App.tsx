@@ -3,14 +3,16 @@ import {
   Boxes,
   Calculator,
   Home,
+  RadioReceiver,
   Settings,
   Store,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
-import { recipes } from "./data/mock/recipes";
 import { inventoryStacks } from "./data/mock/inventory";
 import { prices } from "./data/mock/prices";
+import { recipes } from "./data/mock/recipes";
 import { itemsById } from "./domain/catalog";
 import {
   analyzeCrafting,
@@ -24,7 +26,30 @@ type ViewId =
   | "opportunities"
   | "market"
   | "inventory"
+  | "capture"
   | "settings";
+
+type CaptureDevice = {
+  name: string;
+  description?: string | null;
+  addresses: string[];
+  is_loopback: boolean;
+  has_ipv4: boolean;
+};
+
+type CaptureStatus = {
+  available: boolean;
+  running: boolean;
+  selected_device?: string | null;
+  filter?: string | null;
+  packets_total: number;
+  bytes_total: number;
+  packets_per_second: number;
+  bytes_per_second: number;
+  started_at?: string | null;
+  last_packet_at?: string | null;
+  last_error?: string | null;
+};
 
 const navItems: Array<{ id: ViewId; label: string; icon: typeof Home }> = [
   { id: "home", label: "Inicio", icon: Home },
@@ -32,8 +57,23 @@ const navItems: Array<{ id: ViewId; label: string; icon: typeof Home }> = [
   { id: "opportunities", label: "Oportunidades", icon: BarChart3 },
   { id: "market", label: "Mercado", icon: Store },
   { id: "inventory", label: "Inventario", icon: Boxes },
+  { id: "capture", label: "Captura", icon: RadioReceiver },
   { id: "settings", label: "Configuracoes", icon: Settings },
 ];
+
+const defaultCaptureStatus: CaptureStatus = {
+  available: false,
+  running: false,
+  selected_device: null,
+  filter: null,
+  packets_total: 0,
+  bytes_total: 0,
+  packets_per_second: 0,
+  bytes_per_second: 0,
+  started_at: null,
+  last_packet_at: null,
+  last_error: null,
+};
 
 const defaultSettings = {
   city: "Martlock" as City,
@@ -48,6 +88,10 @@ const defaultSettings = {
 };
 
 const silver = new Intl.NumberFormat("pt-BR", {
+  maximumFractionDigits: 0,
+});
+
+const integer = new Intl.NumberFormat("pt-BR", {
   maximumFractionDigits: 0,
 });
 
@@ -127,13 +171,16 @@ function App() {
             <header className="viewHeader">
               <div>
                 <p className="eyebrow">Painel</p>
-                <h1>Início</h1>
+                <h1>Inicio</h1>
               </div>
               <StatusPill label="Dados simulados" />
             </header>
             <div className="metricGrid">
               <Metric label="Receitas" value={recipes.length.toString()} />
-              <Metric label="Itens no inventario" value={inventoryStacks.length.toString()} />
+              <Metric
+                label="Itens no inventario"
+                value={inventoryStacks.length.toString()}
+              />
               <Metric label="Precos mock" value={prices.length.toString()} />
               <Metric
                 label="Melhor lucro economico"
@@ -337,7 +384,9 @@ function App() {
                       <td>{price.quality}</td>
                       <td>{silver.format(price.sellPrice)}</td>
                       <td>{silver.format(price.buyPrice)}</td>
-                      <td>{price.sellQuantity}/{price.buyQuantity}</td>
+                      <td>
+                        {price.sellQuantity}/{price.buyQuantity}
+                      </td>
                       <td>{price.updatedAt}</td>
                     </tr>
                   ))}
@@ -379,6 +428,8 @@ function App() {
           </section>
         )}
 
+        {activeView === "capture" && <CaptureView />}
+
         {activeView === "settings" && (
           <section className="view">
             <header className="viewHeader">
@@ -401,6 +452,202 @@ function App() {
         )}
       </main>
     </div>
+  );
+}
+
+function CaptureView() {
+  const [devices, setDevices] = useState<CaptureDevice[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState("");
+  const [filter, setFilter] = useState("udp");
+  const [status, setStatus] = useState<CaptureStatus>(defaultCaptureStatus);
+  const [message, setMessage] = useState("");
+
+  const recommendedDevice = useMemo(
+    () => devices.find((device) => device.has_ipv4 && !device.is_loopback),
+    [devices],
+  );
+
+  const refreshStatus = useCallback(async () => {
+    const nextStatus = await invoke<CaptureStatus>("capture_get_status");
+    setStatus(nextStatus);
+  }, []);
+
+  const refreshDevices = useCallback(async () => {
+    try {
+      const availability = await invoke<CaptureStatus>("capture_check_availability");
+      setStatus(availability);
+      const nextDevices = await invoke<CaptureDevice[]>("capture_list_devices");
+      setDevices(nextDevices);
+      setMessage(
+        nextDevices.length === 0
+          ? "Nenhuma interface foi encontrada pelo Npcap."
+          : "Interfaces atualizadas.",
+      );
+      if (!selectedDevice) {
+        const suggested =
+          nextDevices.find((device) => device.has_ipv4 && !device.is_loopback) ??
+          nextDevices[0];
+        setSelectedDevice(suggested?.name ?? "");
+      }
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }, [selectedDevice]);
+
+  useEffect(() => {
+    void refreshDevices();
+  }, [refreshDevices]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refreshStatus();
+    }, 1000);
+
+    return () => window.clearInterval(interval);
+  }, [refreshStatus]);
+
+  async function startCapture() {
+    try {
+      await invoke("capture_start", {
+        request: {
+          device_name: selectedDevice,
+          filter,
+        },
+      });
+      setMessage("Captura iniciada.");
+      await refreshStatus();
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  async function stopCapture() {
+    try {
+      const stopped = await invoke<CaptureStatus>("capture_stop");
+      setStatus(stopped);
+      setMessage("Captura parada.");
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  return (
+    <section className="view">
+      <header className="viewHeader">
+        <div>
+          <p className="eyebrow">Diagnostico local</p>
+          <h1>Captura</h1>
+        </div>
+        <StatusPill label={status.running ? "Rodando" : "Parada"} />
+      </header>
+
+      <div className="notice">
+        A captura e local e passiva. Nesta versao, o aplicativo contabiliza pacotes,
+        mas nao armazena nem envia o conteudo capturado.
+      </div>
+
+      <div className="metricGrid captureMetrics">
+        <Metric label="Npcap" value={status.available ? "Disponivel" : "Indisponivel"} />
+        <Metric label="Pacotes" value={integer.format(status.packets_total)} />
+        <Metric label="Bytes" value={integer.format(status.bytes_total)} />
+        <Metric
+          label="Pacotes por segundo"
+          value={status.packets_per_second.toFixed(1)}
+        />
+        <Metric
+          label="Bytes por segundo"
+          value={status.bytes_per_second.toFixed(0)}
+        />
+      </div>
+
+      <Panel title="Controle">
+        <div className="captureControls">
+          <label>
+            Interface
+            <select
+              value={selectedDevice}
+              onChange={(event) => setSelectedDevice(event.currentTarget.value)}
+            >
+              <option value="">Selecione</option>
+              {devices.map((device) => (
+                <option key={device.name} value={device.name}>
+                  {device.description || device.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Filtro BPF
+            <input value={filter} onChange={(event) => setFilter(event.currentTarget.value)} />
+          </label>
+          <button type="button" onClick={() => void refreshDevices()}>
+            Atualizar interfaces
+          </button>
+          <button
+            disabled={!selectedDevice || status.running}
+            type="button"
+            onClick={() => void startCapture()}
+          >
+            Iniciar
+          </button>
+          <button disabled={!status.running} type="button" onClick={() => void stopCapture()}>
+            Parar
+          </button>
+        </div>
+      </Panel>
+
+      <div className="split">
+        <Panel title="Interfaces">
+          <table>
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Descricao</th>
+                <th>Enderecos</th>
+                <th>Loopback</th>
+              </tr>
+            </thead>
+            <tbody>
+              {devices.map((device) => (
+                <tr
+                  className={recommendedDevice?.name === device.name ? "recommendedRow" : ""}
+                  key={device.name}
+                >
+                  <td>{device.name}</td>
+                  <td>{device.description ?? "-"}</td>
+                  <td>{device.addresses.join(", ") || "-"}</td>
+                  <td>{device.is_loopback ? "Sim" : "Nao"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Panel>
+
+        <Panel title="Status">
+          <dl className="details">
+            <div>
+              <dt>Interface</dt>
+              <dd>{status.selected_device ?? "-"}</dd>
+            </div>
+            <div>
+              <dt>Filtro</dt>
+              <dd>{status.filter ?? "-"}</dd>
+            </div>
+            <div>
+              <dt>Inicio</dt>
+              <dd>{formatTimestamp(status.started_at)}</dd>
+            </div>
+            <div>
+              <dt>Ultimo pacote</dt>
+              <dd>{formatTimestamp(status.last_packet_at)}</dd>
+            </div>
+          </dl>
+          {(message || status.last_error) && (
+            <div className="errorBox">{status.last_error ?? message}</div>
+          )}
+        </Panel>
+      </div>
+    </section>
   );
 }
 
@@ -430,6 +677,19 @@ function Panel({
 
 function StatusPill({ label }: { label: string }) {
   return <span className="statusPill">{label}</span>;
+}
+
+function formatTimestamp(value?: string | null) {
+  if (!value) {
+    return "-";
+  }
+
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds)) {
+    return value;
+  }
+
+  return new Date(seconds * 1000).toLocaleTimeString("pt-BR");
 }
 
 export default App;
