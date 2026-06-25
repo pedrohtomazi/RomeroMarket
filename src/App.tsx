@@ -8,7 +8,7 @@ import {
   Store,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import { inventoryStacks } from "./data/mock/inventory";
 import { prices } from "./data/mock/prices";
@@ -84,6 +84,65 @@ type CaptureMarker = {
   description: string;
   packets_total: number;
   bytes_total: number;
+  conversation_diffs: ConversationMarkerDiff[];
+};
+
+type ConversationMarkerDiff = {
+  conversation_id: string;
+  endpoint: string;
+  packets_added: number;
+  bytes_added: number;
+  is_new: boolean;
+  became_active: boolean;
+};
+
+type NetworkConversation = {
+  id: string;
+  protocol: "UDP" | "TCP";
+  local_ip: string;
+  local_port: number;
+  remote_ip: string;
+  remote_port: number;
+  packets_sent: number;
+  packets_received: number;
+  bytes_sent: number;
+  bytes_received: number;
+  packets_total: number;
+  bytes_total: number;
+  packets_per_second: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  active: boolean;
+  active_after_latest_marker: boolean;
+};
+
+type ConversationDetails = {
+  conversation: NetworkConversation;
+  duration_seconds: number;
+  min_datagram_size: number;
+  average_datagram_size: number;
+  max_datagram_size: number;
+  common_sizes: Array<{ size: number; count: number }>;
+};
+
+type RecentDatagram = {
+  id: string;
+  session_id: string;
+  conversation_id: string;
+  sequence_number: number;
+  timestamp: string;
+  direction: FlowDirection;
+  captured_size: number;
+  original_size: number;
+};
+
+type DatagramPayload = {
+  datagram_id: string;
+  ethernet_header_hex: string;
+  ip_header_hex: string;
+  transport_header_hex: string;
+  application_payload_hex: string;
+  payload_truncated: boolean;
 };
 
 const navItems: Array<{ id: ViewId; label: string; icon: typeof Home }> = [
@@ -502,11 +561,19 @@ function CaptureView() {
   const [filter, setFilter] = useState("udp");
   const [status, setStatus] = useState<CaptureStatus>(defaultCaptureStatus);
   const [flows, setFlows] = useState<NetworkFlow[]>([]);
+  const [conversations, setConversations] = useState<NetworkConversation[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState("");
+  const [conversationDetails, setConversationDetails] =
+    useState<ConversationDetails | null>(null);
+  const [recentDatagrams, setRecentDatagrams] = useState<RecentDatagram[]>([]);
+  const [selectedDatagramId, setSelectedDatagramId] = useState("");
+  const [datagramPayload, setDatagramPayload] = useState<DatagramPayload | null>(null);
   const [markers, setMarkers] = useState<CaptureMarker[]>([]);
   const [flowFilter, setFlowFilter] = useState<FlowFilter>("ALL");
   const [flowSearch, setFlowSearch] = useState("");
   const [flowSort, setFlowSort] = useState<FlowSort>("bytes");
   const [flowLimit, setFlowLimit] = useState(50);
+  const [onlyActiveConversations, setOnlyActiveConversations] = useState(false);
   const [message, setMessage] = useState("");
 
   const recommendedDevice = useMemo(
@@ -544,6 +611,33 @@ function CaptureView() {
     });
   }, [flowFilter, flowSearch, flowSort, flows]);
 
+  const visibleConversations = useMemo(() => {
+    const search = flowSearch.trim().toLowerCase();
+    return conversations
+      .filter((conversation) => {
+        const protocolMatches =
+          flowFilter === "ALL" || conversation.protocol === flowFilter;
+        const activeMatches = !onlyActiveConversations || conversation.active;
+        const searchMatches =
+          !search ||
+          conversation.local_ip.toLowerCase().includes(search) ||
+          conversation.remote_ip.toLowerCase().includes(search) ||
+          String(conversation.local_port).includes(search) ||
+          String(conversation.remote_port).includes(search);
+
+        return protocolMatches && activeMatches && searchMatches;
+      })
+      .sort((a, b) => {
+        if (flowSort === "packets") {
+          return b.packets_total - a.packets_total;
+        }
+        if (flowSort === "recent") {
+          return Number(b.last_seen_at) - Number(a.last_seen_at);
+        }
+        return b.bytes_total - a.bytes_total;
+      });
+  }, [conversations, flowFilter, flowSearch, flowSort, onlyActiveConversations]);
+
   const refreshStatus = useCallback(async () => {
     const nextStatus = await invoke<CaptureStatus>("capture_get_status");
     setStatus(nextStatus);
@@ -558,6 +652,50 @@ function CaptureView() {
     });
     setFlows(nextFlows);
   }, [flowLimit]);
+
+  const refreshConversations = useCallback(async () => {
+    const nextConversations = await invoke<NetworkConversation[]>(
+      "capture_get_conversations",
+      {
+        request: { limit: flowLimit },
+      },
+    );
+    setConversations(nextConversations);
+    setSelectedConversationId((current) => {
+      if (current && nextConversations.some((item) => item.id === current)) {
+        return current;
+      }
+      return nextConversations[0]?.id ?? "";
+    });
+  }, [flowLimit]);
+
+  const refreshConversationInspector = useCallback(async () => {
+    if (!status.session_id || !selectedConversationId) {
+      setConversationDetails(null);
+      setRecentDatagrams([]);
+      setDatagramPayload(null);
+      return;
+    }
+
+    const details = await invoke<ConversationDetails>(
+      "capture_get_conversation_details",
+      {
+        request: {
+          session_id: status.session_id,
+          conversation_id: selectedConversationId,
+        },
+      },
+    );
+    const datagrams = await invoke<RecentDatagram[]>("capture_get_recent_datagrams", {
+      request: {
+        session_id: status.session_id,
+        conversation_id: selectedConversationId,
+        limit: 25,
+      },
+    });
+    setConversationDetails(details);
+    setRecentDatagrams(datagrams);
+  }, [selectedConversationId, status.session_id]);
 
   const refreshMarkers = useCallback(async () => {
     const nextMarkers = await invoke<CaptureMarker[]>("capture_get_markers");
@@ -597,12 +735,20 @@ function CaptureView() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       void refreshStatus();
+      void refreshConversations();
       void refreshFlows();
+      void refreshConversationInspector();
       void refreshMarkers();
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [refreshFlows, refreshMarkers, refreshStatus]);
+  }, [
+    refreshConversationInspector,
+    refreshConversations,
+    refreshFlows,
+    refreshMarkers,
+    refreshStatus,
+  ]);
 
   useEffect(() => {
     if (selectedDevice) {
@@ -619,9 +765,15 @@ function CaptureView() {
         },
       });
       setFlows([]);
+      setConversations([]);
+      setSelectedConversationId("");
+      setConversationDetails(null);
+      setRecentDatagrams([]);
+      setDatagramPayload(null);
       setMarkers([]);
       setMessage("Captura iniciada.");
       await refreshStatus();
+      await refreshConversations();
       await refreshFlows();
     } catch (error) {
       setMessage(String(error));
@@ -633,6 +785,7 @@ function CaptureView() {
       const stopped = await invoke<CaptureStatus>("capture_stop");
       setStatus(stopped);
       setMessage("Captura parada.");
+      await refreshConversations();
       await refreshFlows();
     } catch (error) {
       setMessage(String(error));
@@ -661,6 +814,49 @@ function CaptureView() {
     setFlowSearch("");
     setFlowSort("bytes");
     setFlowLimit(50);
+    setOnlyActiveConversations(false);
+  }
+
+  async function loadDatagramPayload(datagram: RecentDatagram) {
+    if (!status.session_id) {
+      return;
+    }
+
+    try {
+      const payload = await invoke<DatagramPayload>("capture_get_datagram_payload", {
+        request: {
+          session_id: status.session_id,
+          conversation_id: datagram.conversation_id,
+          datagram_id: datagram.id,
+        },
+      });
+      setSelectedDatagramId(datagram.id);
+      setDatagramPayload(payload);
+    } catch (error) {
+      setMessage(String(error));
+    }
+  }
+
+  async function copyPayloadHex() {
+    if (!datagramPayload) {
+      return;
+    }
+
+    await window.navigator.clipboard.writeText(
+      [
+        datagramPayload.ethernet_header_hex,
+        datagramPayload.ip_header_hex,
+        datagramPayload.transport_header_hex,
+        datagramPayload.application_payload_hex,
+      ].join("\n"),
+    );
+    setMessage("Hexadecimal copiado.");
+  }
+
+  function useNetworkShortcut() {
+    setFilter("udp and net 5.188.0.0/16");
+    setFlowFilter("UDP");
+    setFlowSearch("5.188.");
   }
 
   return (
@@ -797,6 +993,236 @@ function CaptureView() {
         </Panel>
       </div>
 
+      <Panel title="Conversas observadas">
+        <div className="flowToolbar">
+          <button type="button" onClick={() => setFlowFilter("ALL")}>
+            Todos
+          </button>
+          <button type="button" onClick={() => setFlowFilter("UDP")}>
+            UDP
+          </button>
+          <button type="button" onClick={() => setFlowFilter("TCP")}>
+            TCP
+          </button>
+          <button
+            className={onlyActiveConversations ? "pressedButton" : ""}
+            type="button"
+            onClick={() => setOnlyActiveConversations((value) => !value)}
+          >
+            Somente ativos
+          </button>
+          <button type="button" onClick={useNetworkShortcut}>
+            Rede 5.188/16
+          </button>
+          <label>
+            Pesquisar IP ou porta
+            <input
+              value={flowSearch}
+              onChange={(event) => setFlowSearch(event.currentTarget.value)}
+            />
+          </label>
+          <label>
+            Ordenar por
+            <select
+              value={flowSort}
+              onChange={(event) => setFlowSort(event.currentTarget.value as FlowSort)}
+            >
+              <option value="bytes">Bytes</option>
+              <option value="packets">Pacotes</option>
+              <option value="recent">Atividade recente</option>
+            </select>
+          </label>
+          <label>
+            Limite
+            <select
+              value={flowLimit}
+              onChange={(event) => setFlowLimit(Number(event.currentTarget.value))}
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </label>
+          <button type="button" onClick={clearFlowView}>
+            Limpar visualização
+          </button>
+        </div>
+
+        <div className="tableScroller">
+          <table className="conversationsTable">
+            <thead>
+              <tr>
+                <th>Estado</th>
+                <th>Protocolo</th>
+                <th>Endpoint local</th>
+                <th>Endpoint remoto</th>
+                <th>Enviados</th>
+                <th>Recebidos</th>
+                <th>Bytes enviados</th>
+                <th>Bytes recebidos</th>
+                <th>Total</th>
+                <th>Pacotes/s</th>
+                <th>Último pacote</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleConversations.map((conversation) => (
+                <tr
+                  className={[
+                    selectedConversationId === conversation.id ? "selectedRow" : "",
+                    conversation.active && status.running ? "activeFlow" : "",
+                    conversation.active_after_latest_marker ? "afterMarkerRow" : "",
+                  ].join(" ")}
+                  key={conversation.id}
+                  onClick={() => {
+                    setSelectedConversationId(conversation.id);
+                    setDatagramPayload(null);
+                  }}
+                >
+                  <td>{conversationState(conversation, status.running)}</td>
+                  <td>{conversation.protocol}</td>
+                  <td>{endpoint(conversation.local_ip, conversation.local_port)}</td>
+                  <td>{endpoint(conversation.remote_ip, conversation.remote_port)}</td>
+                  <td>{integer.format(conversation.packets_sent)}</td>
+                  <td>{integer.format(conversation.packets_received)}</td>
+                  <td>{integer.format(conversation.bytes_sent)}</td>
+                  <td>{integer.format(conversation.bytes_received)}</td>
+                  <td>{integer.format(conversation.bytes_total)}</td>
+                  <td>{conversation.packets_per_second.toFixed(1)}</td>
+                  <td>{formatTimestamp(conversation.last_seen_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      {conversationDetails && (
+        <div className="split">
+          <Panel title="Inspetor da conversa">
+            <dl className="details">
+              <div>
+                <dt>Endpoint local</dt>
+                <dd>
+                  {endpoint(
+                    conversationDetails.conversation.local_ip,
+                    conversationDetails.conversation.local_port,
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Endpoint remoto</dt>
+                <dd>
+                  {endpoint(
+                    conversationDetails.conversation.remote_ip,
+                    conversationDetails.conversation.remote_port,
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Enviados / recebidos</dt>
+                <dd>
+                  {integer.format(conversationDetails.conversation.packets_sent)} /{" "}
+                  {integer.format(conversationDetails.conversation.packets_received)}
+                </dd>
+              </div>
+              <div>
+                <dt>Bytes enviados / recebidos</dt>
+                <dd>
+                  {integer.format(conversationDetails.conversation.bytes_sent)} /{" "}
+                  {integer.format(conversationDetails.conversation.bytes_received)}
+                </dd>
+              </div>
+              <div>
+                <dt>Primeiro pacote</dt>
+                <dd>{formatTimestamp(conversationDetails.conversation.first_seen_at)}</dd>
+              </div>
+              <div>
+                <dt>Último pacote</dt>
+                <dd>{formatTimestamp(conversationDetails.conversation.last_seen_at)}</dd>
+              </div>
+              <div>
+                <dt>Duração</dt>
+                <dd>{formatDuration(conversationDetails.duration_seconds)}</dd>
+              </div>
+              <div>
+                <dt>Tamanho min / médio / max</dt>
+                <dd>
+                  {integer.format(conversationDetails.min_datagram_size)} /{" "}
+                  {conversationDetails.average_datagram_size.toFixed(1)} /{" "}
+                  {integer.format(conversationDetails.max_datagram_size)}
+                </dd>
+              </div>
+            </dl>
+            <div className="sizeBuckets">
+              {conversationDetails.common_sizes.map((bucket) => (
+                <span key={bucket.size}>
+                  {bucket.size} B x {bucket.count}
+                </span>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel title="Últimos datagramas">
+            <div className="tableScroller">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Horário</th>
+                    <th>Direção</th>
+                    <th>Capturado</th>
+                    <th>Original</th>
+                    <th>Seq.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentDatagrams.map((datagram) => (
+                    <tr
+                      className={selectedDatagramId === datagram.id ? "selectedRow" : ""}
+                      key={datagram.id}
+                      onClick={() => void loadDatagramPayload(datagram)}
+                    >
+                      <td>{formatTimestamp(datagram.timestamp)}</td>
+                      <td>{directionLabel(datagram.direction)}</td>
+                      <td>{integer.format(datagram.captured_size)}</td>
+                      <td>{integer.format(datagram.original_size)}</td>
+                      <td>{datagram.sequence_number}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {datagramPayload && (
+              <div className="hexInspector">
+                <div>
+                  <button type="button" onClick={() => void copyPayloadHex()}>
+                    Copiar hexadecimal
+                  </button>
+                  <button type="button" onClick={() => setDatagramPayload(null)}>
+                    Ocultar conteúdo
+                  </button>
+                </div>
+                <HexBlock label="Cabeçalho Ethernet" value={datagramPayload.ethernet_header_hex} />
+                <HexBlock label="Cabeçalho IP" value={datagramPayload.ip_header_hex} />
+                <HexBlock
+                  label="Cabeçalho UDP/TCP"
+                  value={datagramPayload.transport_header_hex}
+                />
+                <HexBlock
+                  label={
+                    datagramPayload.payload_truncated
+                      ? "Payload da aplicação (truncado)"
+                      : "Payload da aplicação"
+                  }
+                  value={datagramPayload.application_payload_hex || "-"}
+                />
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
+
       <Panel title="Fluxos observados">
         <div className="flowToolbar">
           <label>
@@ -897,12 +1323,26 @@ function CaptureView() {
             </thead>
             <tbody>
               {markers.map((marker) => (
-                <tr key={`${marker.session_id}-${marker.timestamp}-${marker.description}`}>
-                  <td>{formatTimestamp(marker.timestamp)}</td>
-                  <td>{marker.description}</td>
-                  <td>{integer.format(marker.packets_total)}</td>
-                  <td>{integer.format(marker.bytes_total)}</td>
-                </tr>
+                <Fragment key={`${marker.session_id}-${marker.timestamp}-${marker.description}`}>
+                  <tr key={`${marker.session_id}-${marker.timestamp}-${marker.description}`}>
+                    <td>{formatTimestamp(marker.timestamp)}</td>
+                    <td>{marker.description}</td>
+                    <td>{integer.format(marker.packets_total)}</td>
+                    <td>{integer.format(marker.bytes_total)}</td>
+                  </tr>
+                  {marker.conversation_diffs.map((diff) => (
+                    <tr className="markerDiffRow" key={`${marker.timestamp}-${diff.conversation_id}`}>
+                      <td />
+                      <td>
+                        {diff.endpoint}
+                        {diff.is_new ? " nova" : ""}
+                        {diff.became_active ? " ativa" : ""}
+                      </td>
+                      <td>+{integer.format(diff.packets_added)}</td>
+                      <td>+{integer.format(diff.bytes_added)}</td>
+                    </tr>
+                  ))}
+                </Fragment>
               ))}
             </tbody>
           </table>
@@ -940,6 +1380,15 @@ function StatusPill({ label }: { label: string }) {
   return <span className="statusPill">{label}</span>;
 }
 
+function HexBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <section>
+      <h3>{label}</h3>
+      <pre>{value}</pre>
+    </section>
+  );
+}
+
 function deviceLabel(device: CaptureDevice) {
   const flags = [
     device.is_suggested ? "sugerida" : "",
@@ -962,9 +1411,20 @@ function directionLabel(direction: FlowDirection) {
 
 function flowState(flow: NetworkFlow, running: boolean) {
   if (!running) {
-    return "encerrado/parado";
+    return "Sessão parada";
   }
   return flow.active_now ? "ativo agora" : "inativo";
+}
+
+function conversationState(conversation: NetworkConversation, running: boolean) {
+  if (!running) {
+    return "Sessão parada";
+  }
+  return conversation.active ? "Ativo agora" : "Inativo";
+}
+
+function endpoint(ip: string, port: number) {
+  return `${ip}:${port}`;
 }
 
 function flowKey(flow: NetworkFlow) {

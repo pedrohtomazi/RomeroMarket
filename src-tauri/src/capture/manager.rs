@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::IpAddr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -12,8 +13,11 @@ use std::{
 use pcap::{Capture, Device, Error as PcapError};
 
 use super::{
-    analyzer::FlowAggregator,
-    models::{CaptureDevice, CaptureMarker, CaptureSession, CaptureStatus, NetworkFlow},
+    analyzer::{ConversationSnapshot, FlowAggregator},
+    models::{
+        CaptureDevice, CaptureMarker, CaptureSession, CaptureStatus, ConversationDetails,
+        ConversationMarkerDiff, DatagramPayload, NetworkConversation, NetworkFlow, RecentDatagram,
+    },
 };
 
 #[cfg(not(test))]
@@ -27,6 +31,7 @@ pub struct CaptureManager {
     status: Arc<Mutex<CaptureStatus>>,
     flows: Arc<Mutex<FlowAggregator>>,
     markers: Arc<Mutex<Vec<CaptureMarker>>>,
+    marker_snapshots: Arc<Mutex<HashMap<String, ConversationSnapshot>>>,
     sessions: Arc<Mutex<Vec<CaptureSession>>>,
     running: Arc<AtomicBool>,
     worker: Mutex<Option<JoinHandle<()>>>,
@@ -44,6 +49,7 @@ impl CaptureManager {
             status: Arc::new(Mutex::new(CaptureStatus::initial())),
             flows: Arc::new(Mutex::new(FlowAggregator::new(Vec::new()))),
             markers: Arc::new(Mutex::new(Vec::new())),
+            marker_snapshots: Arc::new(Mutex::new(HashMap::new())),
             sessions: Arc::new(Mutex::new(Vec::new())),
             running: Arc::new(AtomicBool::new(false)),
             worker: Mutex::new(None),
@@ -196,6 +202,72 @@ impl CaptureManager {
             .unwrap_or_default()
     }
 
+    pub fn list_conversations(&self, limit: Option<usize>) -> Vec<NetworkConversation> {
+        let limit = limit.unwrap_or(50).clamp(1, MAX_FLOW_LIMIT);
+        let now = now_seconds();
+        self.flows
+            .lock()
+            .map(|flows| flows.list_conversations(limit, now))
+            .unwrap_or_default()
+    }
+
+    pub fn conversation_details(
+        &self,
+        session_id: String,
+        conversation_id: String,
+    ) -> Result<ConversationDetails, String> {
+        let now = now_seconds();
+        self.flows
+            .lock()
+            .map_err(|_| "Falha ao acessar conversas.".to_string())?
+            .conversation_details(&session_id, &conversation_id, now)
+    }
+
+    pub fn recent_datagrams(
+        &self,
+        session_id: String,
+        conversation_id: String,
+        limit: Option<usize>,
+    ) -> Result<Vec<RecentDatagram>, String> {
+        self.flows
+            .lock()
+            .map_err(|_| "Falha ao acessar datagramas.".to_string())?
+            .recent_datagrams(&session_id, &conversation_id, limit.unwrap_or(50))
+    }
+
+    pub fn datagram_payload(
+        &self,
+        session_id: String,
+        conversation_id: String,
+        datagram_id: String,
+    ) -> Result<DatagramPayload, String> {
+        self.flows
+            .lock()
+            .map_err(|_| "Falha ao acessar payload do datagrama.".to_string())?
+            .datagram_payload(&session_id, &conversation_id, &datagram_id)
+    }
+
+    pub fn clear_session_data(&self) -> CaptureStatus {
+        if let Ok(mut flows) = self.flows.lock() {
+            flows.clear_session_data();
+        }
+        if let Ok(mut markers) = self.markers.lock() {
+            markers.clear();
+        }
+        if let Ok(mut snapshots) = self.marker_snapshots.lock() {
+            snapshots.clear();
+        }
+        let mut status = self.status_snapshot();
+        status.packets_total = 0;
+        status.bytes_total = 0;
+        status.packets_per_second = 0.0;
+        status.bytes_per_second = 0.0;
+        status.unclassified_packets = 0;
+        status.last_packet_at = None;
+        self.replace_status(status.clone());
+        status
+    }
+
     pub fn add_marker(&self, description: String) -> Result<CaptureMarker, String> {
         let description = description.trim();
         if description.is_empty() {
@@ -208,17 +280,24 @@ impl CaptureManager {
             .clone()
             .ok_or_else(|| "Inicie uma captura antes de adicionar marcadores.".to_string())?;
         let marker = CaptureMarker {
-            session_id,
+            session_id: session_id.clone(),
             timestamp: timestamp(),
             description: description.to_string(),
             packets_total: status.packets_total,
             bytes_total: status.bytes_total,
+            conversation_diffs: self.marker_diffs(),
         };
 
         self.markers
             .lock()
             .map_err(|_| "Falha ao acessar marcadores.".to_string())?
             .push(marker.clone());
+        if let Ok(mut flows) = self.flows.lock() {
+            flows.set_latest_marker(now_seconds());
+            if let Ok(mut snapshots) = self.marker_snapshots.lock() {
+                *snapshots = flows.conversation_snapshot();
+            }
+        }
 
         Ok(marker)
     }
@@ -257,11 +336,14 @@ impl CaptureManager {
         let started_at = timestamp();
 
         if let Ok(mut flows) = self.flows.lock() {
-            flows.reset(local_addresses);
+            flows.reset_session(session_id.clone(), local_addresses);
         }
 
         if let Ok(mut markers) = self.markers.lock() {
             markers.retain(|marker| marker.session_id != session_id);
+        }
+        if let Ok(mut snapshots) = self.marker_snapshots.lock() {
+            snapshots.clear();
         }
 
         let status = CaptureStatus {
@@ -321,6 +403,57 @@ impl CaptureManager {
                 session.bytes_total = status.bytes_total;
             }
         }
+    }
+
+    fn marker_diffs(&self) -> Vec<ConversationMarkerDiff> {
+        let current = self
+            .flows
+            .lock()
+            .map(|flows| flows.conversation_snapshot())
+            .unwrap_or_default();
+        let previous = self
+            .marker_snapshots
+            .lock()
+            .map(|snapshots| snapshots.clone())
+            .unwrap_or_default();
+
+        let mut diffs = current
+            .iter()
+            .filter_map(|(conversation_id, snapshot)| {
+                let previous_snapshot = previous.get(conversation_id);
+                let packets_added = snapshot
+                    .packets_total
+                    .saturating_sub(previous_snapshot.map_or(0, |item| item.packets_total));
+                let bytes_added = snapshot
+                    .bytes_total
+                    .saturating_sub(previous_snapshot.map_or(0, |item| item.bytes_total));
+                let is_new = previous_snapshot.is_none();
+                let became_active = previous_snapshot
+                    .map(|item| item.last_seen_at != snapshot.last_seen_at)
+                    .unwrap_or(true);
+
+                if packets_added == 0 && bytes_added == 0 && !is_new && !became_active {
+                    return None;
+                }
+
+                Some(ConversationMarkerDiff {
+                    conversation_id: conversation_id.clone(),
+                    endpoint: conversation_id.clone(),
+                    packets_added,
+                    bytes_added,
+                    is_new,
+                    became_active,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        diffs.sort_by(|a, b| {
+            b.bytes_added
+                .cmp(&a.bytes_added)
+                .then_with(|| b.packets_added.cmp(&a.packets_added))
+        });
+        diffs.truncate(20);
+        diffs
     }
 
     #[cfg(test)]

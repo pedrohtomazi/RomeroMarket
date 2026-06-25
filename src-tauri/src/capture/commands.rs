@@ -4,7 +4,9 @@ use super::{
     manager::CaptureManager,
     models::{
         CaptureDevice, CaptureFlowRequest, CaptureMarker, CaptureMarkerRequest,
-        CaptureStartRequest, CaptureStatus, NetworkFlow,
+        CaptureStartRequest, CaptureStatus, ConversationDetails, ConversationDetailsRequest,
+        ConversationRequest, DatagramPayload, DatagramPayloadRequest, NetworkConversation,
+        NetworkFlow, RecentDatagram, RecentDatagramsRequest,
     },
 };
 
@@ -57,4 +59,45 @@ pub fn capture_add_marker(
 #[tauri::command]
 pub fn capture_get_markers(manager: State<'_, CaptureManager>) -> Vec<CaptureMarker> {
     manager.list_markers()
+}
+
+#[tauri::command]
+pub fn capture_get_conversations(
+    manager: State<'_, CaptureManager>,
+    request: Option<ConversationRequest>,
+) -> Vec<NetworkConversation> {
+    manager.list_conversations(request.and_then(|request| request.limit))
+}
+
+#[tauri::command]
+pub fn capture_get_conversation_details(
+    manager: State<'_, CaptureManager>,
+    request: ConversationDetailsRequest,
+) -> Result<ConversationDetails, String> {
+    manager.conversation_details(request.session_id, request.conversation_id)
+}
+
+#[tauri::command]
+pub fn capture_get_recent_datagrams(
+    manager: State<'_, CaptureManager>,
+    request: RecentDatagramsRequest,
+) -> Result<Vec<RecentDatagram>, String> {
+    manager.recent_datagrams(request.session_id, request.conversation_id, request.limit)
+}
+
+#[tauri::command]
+pub fn capture_get_datagram_payload(
+    manager: State<'_, CaptureManager>,
+    request: DatagramPayloadRequest,
+) -> Result<DatagramPayload, String> {
+    manager.datagram_payload(
+        request.session_id,
+        request.conversation_id,
+        request.datagram_id,
+    )
+}
+
+#[tauri::command]
+pub fn capture_clear_session_data(manager: State<'_, CaptureManager>) -> CaptureStatus {
+    manager.clear_session_data()
 }

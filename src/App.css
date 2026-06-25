@@ -464,12 +464,88 @@ tr:last-child td {
   padding: 0 14px;
 }
 
+.flowToolbar .pressedButton {
+  background: #2f4a45;
+  border-color: #5c8077;
+}
+
 .flowsTable {
   min-width: 1180px;
 }
 
+.conversationsTable {
+  min-width: 1280px;
+}
+
 .activeFlow td {
   background: rgba(47, 74, 69, 0.26);
+}
+
+.afterMarkerRow td {
+  box-shadow: inset 3px 0 0 #8fa39e;
+}
+
+.sizeBuckets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 18px 18px;
+}
+
+.sizeBuckets span {
+  background: #20282b;
+  border: 1px solid #343f43;
+  border-radius: 8px;
+  color: #cdd6d7;
+  padding: 6px 10px;
+}
+
+.hexInspector {
+  border-top: 1px solid #252c2f;
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.hexInspector > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hexInspector button {
+  background: #23312f;
+  border: 1px solid #3d5550;
+  border-radius: 8px;
+  color: #edf1ef;
+  font-weight: 800;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.hexInspector h3 {
+  color: #9da8ac;
+  font-size: 0.82rem;
+  margin: 0 0 6px;
+}
+
+.hexInspector pre {
+  background: #101416;
+  border: 1px solid #293235;
+  border-radius: 8px;
+  color: #dce4e3;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.markerDiffRow td {
+  background: #151a1c;
+  color: #9fb0b4;
+  font-size: 0.84rem;
 }
 
 @media (max-width: 920px) {
