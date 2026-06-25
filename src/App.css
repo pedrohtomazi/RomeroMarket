@@ -321,14 +321,16 @@ tr:last-child td {
 }
 
 .captureMetrics {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .captureControls {
   align-items: end;
   display: grid;
   gap: 14px;
-  grid-template-columns: minmax(260px, 1fr) minmax(180px, 260px) auto auto auto;
+  grid-template-columns:
+    minmax(300px, 1fr) minmax(180px, 240px) auto auto auto
+    auto;
   padding: 18px;
 }
 
@@ -372,6 +374,104 @@ tr:last-child td {
   padding: 14px 18px;
 }
 
+.captureView {
+  max-width: 1440px;
+}
+
+.wideControl {
+  min-width: 0;
+}
+
+.tableScroller {
+  overflow-x: auto;
+  width: 100%;
+}
+
+.tableScroller table {
+  min-width: 760px;
+}
+
+.interfacesTable {
+  table-layout: fixed;
+}
+
+.interfacesTable th:nth-child(1),
+.interfacesTable td:nth-child(1) {
+  min-width: 260px;
+  white-space: normal;
+  width: 32%;
+}
+
+.interfacesTable th:nth-child(2),
+.interfacesTable td:nth-child(2) {
+  color: #aab4b8;
+  min-width: 280px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  width: 34%;
+}
+
+.interfacesTable th:nth-child(3),
+.interfacesTable td:nth-child(3) {
+  min-width: 220px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  width: 24%;
+}
+
+.interfacesTable th:nth-child(4),
+.interfacesTable td:nth-child(4) {
+  width: 10%;
+}
+
+.selectedRow td {
+  background: rgba(61, 85, 80, 0.28);
+}
+
+.flowToolbar {
+  align-items: end;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: 140px minmax(220px, 1fr) 180px 120px auto;
+  padding: 18px;
+}
+
+.flowToolbar label {
+  color: #9da8ac;
+  display: grid;
+  font-size: 0.8rem;
+  font-weight: 700;
+  gap: 6px;
+}
+
+.flowToolbar input,
+.flowToolbar select {
+  background: #101416;
+  border: 1px solid #344044;
+  border-radius: 8px;
+  color: #edf1ef;
+  height: 42px;
+  padding: 0 12px;
+}
+
+.flowToolbar button {
+  background: #20282b;
+  border: 1px solid #3a4448;
+  border-radius: 8px;
+  color: #edf1ef;
+  font-weight: 800;
+  height: 42px;
+  padding: 0 14px;
+}
+
+.flowsTable {
+  min-width: 1180px;
+}
+
+.activeFlow td {
+  background: rgba(47, 74, 69, 0.26);
+}
+
 @media (max-width: 920px) {
   .shell {
     grid-template-columns: 1fr;
@@ -387,6 +487,7 @@ tr:last-child td {
   .toolbar,
   .captureMetrics,
   .captureControls,
+  .flowToolbar,
   .split {
     grid-template-columns: 1fr;
   }

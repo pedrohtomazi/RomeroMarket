@@ -23,18 +23,30 @@ Compilacao no Windows:
 - Instale/extraia manualmente o SDK do Npcap/WinPcap conforme sua preferencia e aponte a pasta que contem `wpcap.lib`.
 - O `build.rs` reconhece a variavel `NPCAP_SDK_LIB`. Exemplo: `set NPCAP_SDK_LIB=C:\Npcap-sdk\Lib\x64`.
 - Caminhos comuns como `C:\Npcap-sdk\Lib\x64` e `C:\WpdPack\Lib\x64` tambem sao detectados automaticamente quando existem.
+- Se o SDK estiver em `C:\Npcap-SDK`, inclua `C:\Npcap-SDK\Lib\x64` na variavel `LIB` durante a compilacao, ou defina `NPCAP_SDK_LIB=C:\Npcap-SDK\Lib\x64`.
 
 Como testar:
 
 1. Execute o app em desenvolvimento com `npm run tauri dev`.
 2. Abra a pagina `Captura` no menu lateral.
 3. Clique em `Atualizar interfaces`.
-4. Escolha uma interface. A interface com IPv4 ativo e nao loopback aparece marcada como sugerida.
+4. Escolha uma interface. A interface fisica com IPv4 ativo e nao loopback aparece marcada como sugerida quando possivel.
 5. Mantenha o filtro `udp` ou altere/remova o filtro BPF.
 6. Clique em `Iniciar`.
 7. Gere trafego local abrindo paginas, usando o jogo ou qualquer aplicacao de rede.
 8. Observe os contadores de pacotes, bytes, pacotes por segundo e bytes por segundo.
-9. Clique em `Parar` para encerrar a captura.
+9. Use o painel `Fluxos observados` para filtrar UDP/TCP, pesquisar IP ou porta, ordenar por bytes, pacotes ou atividade recente e acompanhar quais fluxos ficaram ativos nos ultimos segundos.
+10. Use `Adicionar marcador` para registrar eventos manuais da sessao, como Albion aberto, troca de mapa, mercado aberto, painel K aberto ou bau aberto.
+11. Clique em `Parar` para encerrar a captura.
+
+Sessoes e fluxos:
+
+- Cada clique em `Iniciar` cria uma nova sessao em memoria.
+- Os contadores e fluxos sao zerados ao iniciar nova sessao.
+- Fluxos sao agregados por protocolo, IP/porta de origem e IP/porta de destino.
+- O app analisa apenas cabecalhos Ethernet, IPv4, IPv6, UDP e TCP.
+- Pacotes desconhecidos ou truncados incrementam o contador de nao classificados.
+- A direcao entrada/saida e inferida pelos enderecos da interface selecionada. Nao ha leitura de processos, memoria ou protocolo do Albion.
 
 Problemas comuns:
 

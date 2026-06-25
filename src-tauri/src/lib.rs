@@ -2,8 +2,8 @@ mod capture;
 
 use capture::{
     commands::{
-        capture_check_availability, capture_get_status, capture_list_devices, capture_start,
-        capture_stop,
+        capture_add_marker, capture_check_availability, capture_get_flows, capture_get_markers,
+        capture_get_status, capture_list_devices, capture_start, capture_stop,
     },
     manager::CaptureManager,
 };
@@ -25,7 +25,10 @@ pub fn run() {
             capture_list_devices,
             capture_start,
             capture_stop,
-            capture_get_status
+            capture_get_status,
+            capture_get_flows,
+            capture_add_marker,
+            capture_get_markers
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
